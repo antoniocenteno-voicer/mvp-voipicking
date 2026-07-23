@@ -1,0 +1,139 @@
+{
+  "tarefa": {
+    "id": "SEP-2026-000142",
+    "tipo": "SEPARACAO",
+    "centroDistribuicao": {
+      "codigo": "CD-SP-01",
+      "nome": "Centro de Distribuição São Paulo"
+    },
+    "pedido": {
+      "numero": "PED-2026-008731",
+      "destino": "Loja 025 - Campinas"
+    },
+    "status": "PENDENTE",
+    "totalEnderecos": 6,
+    "totalUnidades": 50,
+    "enderecos": [
+      {
+        "sequencia": 1,
+        "endereco": {
+          "setor": "01",
+          "rua": "03",
+          "box": "012",
+          "altura": "01",
+          "caixa": "04",
+          "enderecoFormatado": "01-03-012-01-04",
+          "digitoVerificacao": "317"
+        },
+        "produto": {
+          "codigoInterno": "PROD-0001",
+          "nome": "Arroz Tipo 1",
+          "descricao": "Arroz branco Tipo 1, pacote de 5 kg",
+          "codigoBarras": "7896006711117"
+        },
+        "quantidadeSolicitada": 4,
+        "unidade": "UN"
+      },
+      {
+        "sequencia": 2,
+        "endereco": {
+          "setor": "01",
+          "rua": "03",
+          "box": "018",
+          "altura": "02",
+          "caixa": null,
+          "enderecoFormatado": "01-03-018-02",
+          "digitoVerificacao": "842"
+        },
+        "produto": {
+          "codigoInterno": "PROD-0002",
+          "nome": "Feijão Carioca",
+          "descricao": "Feijão carioca Tipo 1, pacote de 1 kg",
+          "codigoBarras": "7896006711124"
+        },
+        "quantidadeSolicitada": 8,
+        "unidade": "UN"
+      },
+      {
+        "sequencia": 3,
+        "endereco": {
+          "setor": "02",
+          "rua": "05",
+          "box": "007",
+          "altura": "01",
+          "caixa": "02",
+          "enderecoFormatado": "02-05-007-01-02",
+          "digitoVerificacao": "156"
+        },
+        "produto": {
+          "codigoInterno": "PROD-0003",
+          "nome": "Óleo de Soja",
+          "descricao": "Óleo de soja refinado, garrafa PET de 900 ml",
+          "codigoBarras": "7896006711131"
+        },
+        "quantidadeSolicitada": 12,
+        "unidade": "UN"
+      },
+      {
+        "sequencia": 4,
+        "endereco": {
+          "setor": "02",
+          "rua": "06",
+          "box": "021",
+          "altura": "03",
+          "caixa": null,
+          "enderecoFormatado": "02-06-021-03",
+          "digitoVerificacao": "604"
+        },
+        "produto": {
+          "codigoInterno": "PROD-0004",
+          "nome": "Café Torrado e Moído",
+          "descricao": "Café tradicional torrado e moído, pacote de 500 g",
+          "codigoBarras": "7896006711148"
+        },
+        "quantidadeSolicitada": 6,
+        "unidade": "UN"
+      },
+      {
+        "sequencia": 5,
+        "endereco": {
+          "setor": "03",
+          "rua": "02",
+          "box": "015",
+          "altura": "02",
+          "caixa": "01",
+          "enderecoFormatado": "03-02-015-02-01",
+          "digitoVerificacao": "935"
+        },
+        "produto": {
+          "codigoInterno": "PROD-0005",
+          "nome": "Leite Integral UHT",
+          "descricao": "Leite integral UHT, embalagem longa vida de 1 litro",
+          "codigoBarras": "7896006711155"
+        },
+        "quantidadeSolicitada": 16,
+        "unidade": "UN"
+      },
+      {
+        "sequencia": 6,
+        "endereco": {
+          "setor": "03",
+          "rua": "04",
+          "box": "009",
+          "altura": "01",
+          "caixa": "03",
+          "enderecoFormatado": "03-04-009-01-03",
+          "digitoVerificacao": "428"
+        },
+        "produto": {
+          "codigoInterno": "PROD-0006",
+          "nome": "Açúcar Refinado",
+          "descricao": "Açúcar refinado especial, pacote de 1 kg",
+          "codigoBarras": "7896006711162"
+        },
+        "quantidadeSolicitada": 4,
+        "unidade": "UN"
+      }
+    ]
+  }
+}

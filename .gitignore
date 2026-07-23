@@ -1,0 +1,19 @@
+*.iml
+.gradle/
+/local.properties
+.idea/
+.DS_Store
+build/
+/captures
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+
+# whisper.cpp vendorizado como submódulo — não versionar aqui além do ponteiro do submódulo
+app/src/main/cpp/whisper.cpp/
+
+# modelos ggml (grandes, baixados à parte)
+*.bin
+*.ggml
+app/src/main/assets/models/
