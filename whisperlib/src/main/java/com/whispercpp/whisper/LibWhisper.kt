@@ -31,11 +31,16 @@ class WhisperContext private constructor(private var ptr: Long) {
         Executors.newSingleThreadExecutor().asCoroutineDispatcher()
     )
 
-    suspend fun transcribe(data: FloatArray, language: String = "pt"): WhisperResult =
+    /**
+     * [prompt] primes whisper's decoder LM with the vocabulary expected right now (see
+     * WhisperSttEngine/PickingStateMachine.promptDeVoz on the app side) — narrower prompt means
+     * less lexical competition, so the decoder is more likely to land on the right word.
+     */
+    suspend fun transcribe(data: FloatArray, language: String = "pt", prompt: String = ""): WhisperResult =
         withContext(scope.coroutineContext) {
             require(ptr != 0L)
             val numThreads = WhisperCpuConfig.preferredThreadCount
-            WhisperLib.fullTranscribe(ptr, numThreads, data, language)
+            WhisperLib.fullTranscribe(ptr, numThreads, data, language, prompt)
 
             val text = StringBuilder()
             val tokens = mutableListOf<WhisperToken>()
@@ -68,11 +73,37 @@ class WhisperContext private constructor(private var ptr: Long) {
         }
 
         fun getSystemInfo(): String = WhisperLib.getSystemInfo()
+
+        /**
+         * Build nativo carregado (dotprod/fp16/genérico) + threads em uso — pra diagnosticar em
+         * tela, sem logcat, se um device caiu no fallback lento (ex.: ABI não é arm64-v8a, ou o
+         * device não reporta a CPU flag esperada em /proc/cpuinfo) mesmo sendo hardware ARM real.
+         * Inclui a ABI e as flags cruas detectadas — se caiu no fallback, isso mostra se foi
+         * porque a ABI não é arm64-v8a ou porque a flag esperada simplesmente não apareceu no
+         * /proc/cpuinfo desse device (kernel/vendor não expõe, ou o SoC de fato não suporta).
+         */
+        fun infoMotor(): String {
+            val temAsimddp = WhisperLib.cpuFlagsDetectadas.contains("asimddp")
+            val temFphp = WhisperLib.cpuFlagsDetectadas.contains("fphp")
+            // Linha "Features" crua do /proc/cpuinfo — se vier vazia/"(sem leitura)", a leitura
+            // do arquivo falhou (não é que a flag esteja ausente); se vier preenchida mas sem
+            // asimddp/fphp, o kernel desse device realmente não expõe essas flags.
+            val linhaFeatures = WhisperLib.cpuFlagsDetectadas.lineSequence()
+                .firstOrNull { it.contains("Features", ignoreCase = true) }
+                ?.trim()
+                ?: if (WhisperLib.cpuFlagsDetectadas.isBlank()) "(sem leitura de /proc/cpuinfo)" else "(linha Features não encontrada)"
+            return "${WhisperLib.bibliotecaCarregada} · ${WhisperCpuConfig.preferredThreadCount} threads · " +
+                "abi=${WhisperLib.abiDetectado} asimddp=$temAsimddp fphp=$temFphp\n$linhaFeatures"
+        }
     }
 }
 
 private class WhisperLib {
     companion object {
+        val bibliotecaCarregada: String
+        val abiDetectado: String
+        val cpuFlagsDetectadas: String
+
         init {
             // arm64-v8a builds extra libraries targeting optional ARMv8.2 CPU
             // features (see whisperlib CMakeLists.txt), each only safe to load
@@ -84,21 +115,15 @@ private class WhisperLib {
             //     fp16 (most Android CPUs since ~2018), so it's preferred.
             //   - fp16 ("fphp"): faster half-precision arithmetic, narrower
             //     hardware support.
-            val cpuFlags = if (Build.SUPPORTED_ABIS.firstOrNull() == "arm64-v8a") cpuInfoFlags() else ""
-            when {
-                cpuFlags.contains("asimddp") -> {
-                    Log.d(LOG_TAG, "Loading libwhisper_v8dotprod.so")
-                    System.loadLibrary("whisper_v8dotprod")
-                }
-                cpuFlags.contains("fphp") -> {
-                    Log.d(LOG_TAG, "Loading libwhisper_v8fp16_va.so")
-                    System.loadLibrary("whisper_v8fp16_va")
-                }
-                else -> {
-                    Log.d(LOG_TAG, "Loading libwhisper.so")
-                    System.loadLibrary("whisper")
-                }
+            abiDetectado = Build.SUPPORTED_ABIS.firstOrNull() ?: "?"
+            cpuFlagsDetectadas = if (abiDetectado == "arm64-v8a") cpuInfoFlags() else ""
+            bibliotecaCarregada = when {
+                cpuFlagsDetectadas.contains("asimddp") -> "whisper_v8dotprod"
+                cpuFlagsDetectadas.contains("fphp") -> "whisper_v8fp16_va"
+                else -> "whisper"
             }
+            Log.d(LOG_TAG, "Loading lib$bibliotecaCarregada.so (ABI=$abiDetectado, cpuFlags='$cpuFlagsDetectadas')")
+            System.loadLibrary(bibliotecaCarregada)
         }
 
         private fun cpuInfoFlags(): String = try {
@@ -110,7 +135,7 @@ private class WhisperLib {
 
         external fun initContext(modelPath: String): Long
         external fun freeContext(contextPtr: Long)
-        external fun fullTranscribe(contextPtr: Long, numThreads: Int, audioData: FloatArray, language: String)
+        external fun fullTranscribe(contextPtr: Long, numThreads: Int, audioData: FloatArray, language: String, prompt: String)
         external fun getTextSegmentCount(contextPtr: Long): Int
         external fun getTextSegment(contextPtr: Long, index: Int): String
         external fun getTokenCount(contextPtr: Long, segmentIndex: Int): Int

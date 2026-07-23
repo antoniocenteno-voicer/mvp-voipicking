@@ -1,5 +1,6 @@
 package tech.voicer.voipicking.voice
 
+import android.util.Log
 import com.whispercpp.whisper.WhisperContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -15,14 +16,21 @@ class WhisperSttEngine : SttEngine {
         }
     }
 
-    override suspend fun transcrever(pcm16kFloat: FloatArray, idioma: String): SttResultado {
+    override suspend fun transcrever(pcm16kFloat: FloatArray, idioma: String, prompt: String): SttResultado {
         val ctx = contexto ?: error("Modelo Whisper não carregado — chame carregarModelo() antes")
-        val resultado = ctx.transcribe(pcm16kFloat, idioma)
-        return SttResultado(texto = resultado.text, confianca = resultado.avgConfidence)
+        val inicio = System.currentTimeMillis()
+        val resultado = ctx.transcribe(pcm16kFloat, idioma, prompt)
+        val duracaoMs = System.currentTimeMillis() - inicio
+        // Latência de transcrição por amostra — usado pra comparar modelos (ex.: base vs small)
+        // em latência vs. acerto, sem precisar cronometrar no olhômetro.
+        Log.d("VoxPicking", "transcrição levou ${duracaoMs}ms pra ${pcm16kFloat.size} amostras")
+        return SttResultado(texto = resultado.text, confianca = resultado.avgConfidence, duracaoMs = duracaoMs)
     }
 
     override suspend fun liberar() {
         contexto?.release()
         contexto = null
     }
+
+    override fun descricaoMotor(): String = WhisperContext.infoMotor()
 }

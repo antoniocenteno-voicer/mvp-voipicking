@@ -1,27 +1,46 @@
 package tech.voicer.voipicking.ui
 
 import android.app.Application
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import tech.voicer.voipicking.data.model.EnderecoItem
 import tech.voicer.voipicking.data.model.Tarefa
 import tech.voicer.voipicking.repository.PedidoRepository
+import tech.voicer.voipicking.state.PickingCommand
 import tech.voicer.voipicking.state.PickingEvent
 import tech.voicer.voipicking.state.PickingState
 import tech.voicer.voipicking.state.PickingStateMachine
 import tech.voicer.voipicking.voice.AudioRecorder
 import tech.voicer.voipicking.voice.ModelManager
+import tech.voicer.voipicking.voice.SinalSonoro
 import tech.voicer.voipicking.voice.SttEngine
 import tech.voicer.voipicking.voice.TtsManager
+import tech.voicer.voipicking.voice.VoiceActivityDetector
 
 /** Ciclo de vida do motor de voz — independente do [PickingState] do pedido. */
 enum class SttFase { NAO_INICIALIZADO, BAIXANDO_MODELO, CARREGANDO_MOTOR, PRONTO, GRAVANDO, TRANSCREVENDO, ERRO }
+
+/**
+ * Métricas de reconhecimento de voz pra validar latência/acerto em campo (device real, onde
+ * logcat não é prático de acompanhar) — exibidas na tela em vez de só no log.
+ */
+data class DiagnosticoVoz(
+    val ultimaTranscricao: String = "",
+    val ultimoComandoReconhecido: String = "—",
+    val ultimaLatenciaMs: Long = 0,
+    val latenciaMediaMs: Long = 0,
+    val totalTranscricoes: Int = 0
+)
 
 /**
  * Orquestra state machine + TTS + STT + persistência. A UI só observa [estado]/[sttFase]
@@ -36,6 +55,7 @@ class PickingViewModel(
 
     private val maquina = PickingStateMachine()
     private val recorder = AudioRecorder()
+    private val sinalSonoro = SinalSonoro()
 
     private val _estado = MutableStateFlow<PickingState>(PickingState.Ocioso)
     val estado: StateFlow<PickingState> = _estado.asStateFlow()
@@ -45,6 +65,20 @@ class PickingViewModel(
 
     private val _sttMensagem = MutableStateFlow("")
     val sttMensagem: StateFlow<String> = _sttMensagem.asStateFlow()
+
+    private val _escutaContinuaAtiva = MutableStateFlow(false)
+    /** Liga/desliga escuta contínua. Controlado pelo usuário via toggle na UI. */
+    val escutaContinuaAtiva: StateFlow<Boolean> = _escutaContinuaAtiva.asStateFlow()
+
+    private var loopEscutaJob: Job? = null
+    private val vad = VoiceActivityDetector()
+
+    private val _diagnosticoVoz = MutableStateFlow(DiagnosticoVoz())
+    val diagnosticoVoz: StateFlow<DiagnosticoVoz> = _diagnosticoVoz.asStateFlow()
+
+    private val _infoMotor = MutableStateFlow("")
+    /** Build nativo carregado + threads — só disponível depois que o modelo é carregado. */
+    val infoMotor: StateFlow<String> = _infoMotor.asStateFlow()
 
     /** Baixa o modelo (1ª execução) e carrega o motor whisper.cpp. Chamar uma vez ao abrir a tela. */
     fun prepararStt() {
@@ -61,12 +95,48 @@ class PickingViewModel(
                 sttEngine.carregarModelo(modelFile.absolutePath)
                 _sttFase.value = SttFase.PRONTO
                 _sttMensagem.value = "Motor de voz pronto."
+                _infoMotor.value = sttEngine.descricaoMotor()
+                if (_escutaContinuaAtiva.value) iniciarLoopEscutaContinua()
             } catch (e: Exception) {
                 _sttFase.value = SttFase.ERRO
                 _sttMensagem.value = "Erro ao preparar motor de voz: ${e.message}"
             }
         }
     }
+
+    /** Liga/desliga o loop de escuta contínua (grava em chunks, transcreve, roteia, repete). */
+    fun alternarEscutaContinua(ativa: Boolean) {
+        _escutaContinuaAtiva.value = ativa
+        if (ativa) iniciarLoopEscutaContinua() else pararLoopEscutaContinua()
+    }
+
+    private fun iniciarLoopEscutaContinua() {
+        if (loopEscutaJob?.isActive == true) return
+        if (_sttFase.value != SttFase.PRONTO) return // reengatado por prepararStt() quando ficar pronto
+        recorder.iniciarEscutaContinua(vad)
+        loopEscutaJob = viewModelScope.launch {
+            recorder.segmentos().consumeEach { segmento ->
+                if (!_escutaContinuaAtiva.value || !escutaPermitidaNoEstadoAtual()) return@consumeEach
+                _sttFase.value = SttFase.TRANSCREVENDO
+                val resultado = sttEngine.transcrever(segmento, prompt = maquina.promptDeVoz())
+                _sttFase.value = SttFase.PRONTO
+                roteirarTranscricao(resultado.texto, resultado.duracaoMs)
+            }
+        }
+    }
+
+    private fun pararLoopEscutaContinua() {
+        recorder.pararEscutaContinua()
+        loopEscutaJob?.cancel()
+        loopEscutaJob = null
+        if (_sttFase.value == SttFase.TRANSCREVENDO) _sttFase.value = SttFase.PRONTO
+    }
+
+    /**
+     * Hook p/ suspender a escuta contínua em determinados [PickingState] (ex.: enquanto o TTS
+     * está anunciando). Regra de quais estados bloqueiam ainda não definida — por ora sempre libera.
+     */
+    private fun escutaPermitidaNoEstadoAtual(): Boolean = true
 
     fun iniciarGravacao() {
         if (_sttFase.value != SttFase.PRONTO) return
@@ -80,18 +150,52 @@ class PickingViewModel(
         val amostras = recorder.stop()
         _sttFase.value = SttFase.TRANSCREVENDO
         viewModelScope.launch {
-            val resultado = sttEngine.transcrever(amostras)
+            val resultado = sttEngine.transcrever(amostras, prompt = maquina.promptDeVoz())
             _sttFase.value = SttFase.PRONTO
-            roteirarTranscricao(resultado.texto)
+            roteirarTranscricao(resultado.texto, resultado.duracaoMs)
         }
     }
 
-    private fun roteirarTranscricao(transcricao: String) {
+    private fun roteirarTranscricao(transcricao: String, duracaoMs: Long) {
+        val permitidos = maquina.comandosPermitidos()
+        val comando = PickingCommand.reconhecer(transcricao, permitidos)
+        Log.d("VoxPicking", "transcrição='$transcricao' estado=${_estado.value::class.simpleName} comando=$comando duracaoMs=$duracaoMs")
+        val diagnosticoAnterior = _diagnosticoVoz.value
+        val novoTotal = diagnosticoAnterior.totalTranscricoes + 1
+        val novaMedia = ((diagnosticoAnterior.latenciaMediaMs * diagnosticoAnterior.totalTranscricoes) + duracaoMs) / novoTotal
+        _diagnosticoVoz.value = DiagnosticoVoz(
+            ultimaTranscricao = transcricao,
+            ultimoComandoReconhecido = comando?.name ?: "(nenhum)",
+            ultimaLatenciaMs = duracaoMs,
+            latenciaMediaMs = novaMedia,
+            totalTranscricoes = novoTotal
+        )
         when (_estado.value) {
+            is PickingState.Ocioso -> onFalaOcioso(transcricao)
             is PickingState.AguardandoConfirmacaoEndereco -> onFalaConfirmacaoEndereco(transcricao)
             is PickingState.AguardandoConfirmacaoColeta -> onFalaConfirmacaoColeta(transcricao)
+            is PickingState.DivergenciaReportada -> onFalaDivergencia(transcricao)
+            is PickingState.Erro -> onFalaErro(transcricao)
             else -> {}
         }
+    }
+
+    private var tarefaPendenteJson: String? = null
+
+    /** Deixa uma tarefa pronta pra ser puxada por voz ("receber tarefa") assim que chegar do backend. */
+    fun definirTarefaDisponivel(tarefaJson: String) {
+        tarefaPendenteJson = tarefaJson
+    }
+
+    /** Chamado pela UI/STT ao reconhecer fala do separador em [PickingState.Ocioso]. */
+    fun onFalaOcioso(transcricao: String) {
+        val comando = PickingCommand.reconhecer(transcricao, maquina.comandosPermitidos(PickingState.Ocioso))
+        if (comando != PickingCommand.RECEBER_TAREFA) return
+        val tarefaJson = tarefaPendenteJson ?: run {
+            tts.falar("Nenhuma tarefa disponível no momento.")
+            return
+        }
+        carregarTarefa(tarefaJson)
     }
 
     fun carregarTarefa(tarefaJson: String) {
@@ -104,9 +208,23 @@ class PickingViewModel(
         falarEstadoAtual()
     }
 
-    /** Chamado pela UI/STT ao reconhecer fala do separador durante confirmação de endereço. */
+    /**
+     * Chamado pela UI/STT ao reconhecer fala do separador durante confirmação de endereço.
+     * Único estado onde a máquina espera exatamente uma de duas coisas — dígito certo ou não —
+     * então feedback sonoro de erro entra aqui: se a fala não bateu (nem comando, nem dígito
+     * certo), a máquina só tem como resultado permanecer em [PickingState.AguardandoConfirmacaoEndereco]
+     * (nova tentativa) ou cair em [PickingState.Erro] (esgotou tentativas) — os dois casos em que
+     * o separador precisa saber que precisa repetir o dígito.
+     */
     fun onFalaConfirmacaoEndereco(transcricao: String) {
+        val estadoAntes = _estado.value
         aplicarEvento(PickingEvent.ConfirmarEndereco(transcricao))
+        val estadoDepois = _estado.value
+        if (estadoAntes is PickingState.AguardandoConfirmacaoEndereco &&
+            (estadoDepois is PickingState.AguardandoConfirmacaoEndereco || estadoDepois is PickingState.Erro)
+        ) {
+            sinalSonoro.tocarErro()
+        }
         posTransicao()
     }
 
@@ -136,9 +254,25 @@ class PickingViewModel(
         posTransicao()
     }
 
+    /** Chamado pela UI/STT ao reconhecer fala do separador em [PickingState.DivergenciaReportada]. */
+    fun onFalaDivergencia(transcricao: String) {
+        when (PickingCommand.reconhecer(transcricao, maquina.comandosPermitidos())) {
+            PickingCommand.CONFIRMAR -> confirmarDivergencia()
+            PickingCommand.CANCELAR -> cancelar()
+            else -> {} // ignora ruído fora de contexto — segue esperando confirmação por voz
+        }
+    }
+
     fun cancelar() {
         aplicarEvento(PickingEvent.CancelarTarefa)
         falarEstadoAtual()
+    }
+
+    /** Chamado pela UI/STT ao reconhecer fala do separador em [PickingState.Erro]. */
+    fun onFalaErro(transcricao: String) {
+        if (PickingCommand.reconhecer(transcricao, maquina.comandosPermitidos()) == PickingCommand.CANCELAR) {
+            cancelar()
+        }
     }
 
     private fun posTransicao() {
@@ -176,14 +310,19 @@ class PickingViewModel(
 
     private fun aplicarEvento(evento: PickingEvent) {
         _estado.value = maquina.transicionar(evento)
+        Log.d("VoxPicking", "evento=${evento::class.simpleName} -> novoEstado=${_estado.value::class.simpleName}")
     }
 
     private fun falarEstadoAtual() {
         when (val e = _estado.value) {
             is PickingState.AnunciandoEndereco ->
-                tts.falar("Vá até o endereço ${e.item.endereco.formatado}. Confirme dígito ${e.item.endereco.digitoVerificacao}.")
+                falarEAvancarAoConcluir(
+                    "Vá até o endereço ${e.item.endereco.formatado}. Confirme dígito ${e.item.endereco.digitoVerificacao}."
+                ) { onEnderecoAnunciadoConcluido() }
             is PickingState.AnunciandoProduto ->
-                tts.falar("Separe ${e.item.quantidadeSolicitada} ${e.item.unidade} de ${e.item.produto.nome}.")
+                falarEAvancarAoConcluir(
+                    "Separe ${e.item.quantidadeSolicitada} ${e.item.unidade} de ${e.item.produto.nome}."
+                ) { onProdutoAnunciadoConcluido() }
             is PickingState.DivergenciaReportada ->
                 tts.falar("Divergência registrada: ${e.quantidadeInformada} unidades informadas.")
             is PickingState.TarefaConcluida ->
@@ -194,7 +333,17 @@ class PickingViewModel(
         }
     }
 
+    /** Fala [texto] e só chama [aoConcluir] quando o TTS efetivamente termina de falar. */
+    private fun falarEAvancarAoConcluir(texto: String, aoConcluir: () -> Unit) {
+        viewModelScope.launch {
+            tts.falarEAguardar(texto).first()
+            aoConcluir()
+        }
+    }
+
     override fun onCleared() {
+        pararLoopEscutaContinua()
+        sinalSonoro.liberar()
         tts.liberar()
         // viewModelScope já está cancelado neste ponto do ciclo de vida — usa um
         // escopo próprio só p/ garantir que o contexto nativo do whisper.cpp libere.

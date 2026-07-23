@@ -10,9 +10,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Row
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -30,6 +32,7 @@ import tech.voicer.voipicking.repository.PedidoRepository
 import tech.voicer.voipicking.state.PickingState
 import tech.voicer.voipicking.ui.PickingViewModel
 import tech.voicer.voipicking.ui.SttFase
+import tech.voicer.voipicking.voice.ModelManager
 import tech.voicer.voipicking.voice.TtsManager
 import tech.voicer.voipicking.voice.WhisperSttEngine
 
@@ -63,7 +66,10 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     val viewModel: PickingViewModel = viewModel(factory = factory)
-                    LaunchedEffect(Unit) { viewModel.prepararStt() }
+                    LaunchedEffect(Unit) {
+                        viewModel.prepararStt()
+                        viewModel.definirTarefaDisponivel(TAREFA_EXEMPLO_JSON)
+                    }
                     TelaPicking(viewModel)
                 }
             }
@@ -76,6 +82,9 @@ fun TelaPicking(viewModel: PickingViewModel) {
     val estado by viewModel.estado.collectAsState()
     val sttFase by viewModel.sttFase.collectAsState()
     val sttMensagem by viewModel.sttMensagem.collectAsState()
+    val escutaContinuaAtiva by viewModel.escutaContinuaAtiva.collectAsState()
+    val diagnosticoVoz by viewModel.diagnosticoVoz.collectAsState()
+    val infoMotor by viewModel.infoMotor.collectAsState()
     val tarefaExemplo = remember { TAREFA_EXEMPLO_JSON }
 
     Column(
@@ -83,36 +92,83 @@ fun TelaPicking(viewModel: PickingViewModel) {
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Text("Motor de voz: $sttMensagem", style = MaterialTheme.typography.labelMedium)
+        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            Text("Escuta contínua", style = MaterialTheme.typography.labelLarge)
+            Switch(checked = escutaContinuaAtiva, onCheckedChange = { viewModel.alternarEscutaContinua(it) })
+        }
+        PainelDiagnostico(diagnosticoVoz, infoMotor)
         Text("Estado atual:", style = MaterialTheme.typography.labelLarge)
         Text(descreverEstado(estado), style = MaterialTheme.typography.bodyLarge)
 
         when (estado) {
-            is PickingState.Ocioso ->
-                Button(onClick = { viewModel.carregarTarefa(tarefaExemplo) }) {
-                    Text("Carregar tarefa de exemplo")
+            is PickingState.Ocioso -> {
+                if (!escutaContinuaAtiva) {
+                    BotaoMicrofone(sttFase, viewModel)
+                    Button(onClick = { viewModel.carregarTarefa(tarefaExemplo) }) {
+                        Text("(teste) Carregar tarefa de exemplo")
+                    }
+                } else {
+                    Text("Diga \"receber tarefa\"...", style = MaterialTheme.typography.bodyMedium)
                 }
+            }
             is PickingState.AguardandoConfirmacaoEndereco -> {
-                BotaoMicrofone(sttFase, viewModel)
-                Button(onClick = { viewModel.onFalaConfirmacaoEndereco("confirmado") }) { Text("(teste) confirmar endereço") }
-                Button(onClick = { viewModel.onFalaConfirmacaoEndereco("repete") }) { Text("(teste) repetir") }
+                if (!escutaContinuaAtiva) {
+                    BotaoMicrofone(sttFase, viewModel)
+                    Button(onClick = { viewModel.onFalaConfirmacaoEndereco("confirmado") }) { Text("(teste) confirmar endereço") }
+                    Button(onClick = { viewModel.onFalaConfirmacaoEndereco("repete") }) { Text("(teste) repetir") }
+                }
             }
             is PickingState.AguardandoConfirmacaoColeta -> {
-                BotaoMicrofone(sttFase, viewModel)
-                Button(onClick = { viewModel.onFalaConfirmacaoColeta("confirmado") }) { Text("(teste) confirmar coleta") }
-                Button(onClick = { viewModel.onFalaConfirmacaoColeta("divergencia", null) }) { Text("(teste) reportar divergência") }
+                if (!escutaContinuaAtiva) {
+                    BotaoMicrofone(sttFase, viewModel)
+                    Button(onClick = { viewModel.onFalaConfirmacaoColeta("confirmado") }) { Text("(teste) confirmar coleta") }
+                    Button(onClick = { viewModel.onFalaConfirmacaoColeta("divergencia", null) }) { Text("(teste) reportar divergência") }
+                }
             }
             is PickingState.DivergenciaReportada ->
-                Button(onClick = { viewModel.confirmarDivergencia() }) { Text("Ok, seguir") }
+                if (!escutaContinuaAtiva) {
+                    Button(onClick = { viewModel.confirmarDivergencia() }) { Text("Ok, seguir") }
+                } else {
+                    Text("Diga \"confirmado\" pra seguir...", style = MaterialTheme.typography.bodyMedium)
+                }
             is PickingState.AnunciandoEndereco ->
-                Button(onClick = { viewModel.onEnderecoAnunciadoConcluido() }) { Text("(TTS falando endereço...)") }
+                Text("Falando endereço...", style = MaterialTheme.typography.bodyMedium)
             is PickingState.AnunciandoProduto ->
-                Button(onClick = { viewModel.onProdutoAnunciadoConcluido() }) { Text("(TTS falando produto...)") }
+                Text("Falando produto...", style = MaterialTheme.typography.bodyMedium)
             is PickingState.TarefaConcluida ->
                 Text("Tarefa concluída!")
             is PickingState.Erro ->
-                Button(onClick = { viewModel.cancelar() }) { Text("Cancelar / reiniciar") }
+                if (!escutaContinuaAtiva) {
+                    Button(onClick = { viewModel.cancelar() }) { Text("Cancelar / reiniciar") }
+                } else {
+                    Text("Diga \"cancelar\" pra reiniciar...", style = MaterialTheme.typography.bodyMedium)
+                }
             else -> {}
         }
+    }
+}
+
+/**
+ * Métricas de reconhecimento de voz visíveis em tela — pensado pra teste em device real, onde
+ * acompanhar logcat não é prático. Mostra o suficiente pra validar latência e acerto sem cabo.
+ */
+@Composable
+private fun PainelDiagnostico(diagnostico: tech.voicer.voipicking.ui.DiagnosticoVoz, infoMotor: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text("Modelo STT: ${ModelManager.nomeModeloAtual}", style = MaterialTheme.typography.labelSmall)
+        Text(
+            "Motor: ${infoMotor.ifBlank { "carregando..." }}",
+            style = MaterialTheme.typography.labelSmall
+        )
+        Text(
+            "Última fala: \"${diagnostico.ultimaTranscricao}\" → ${diagnostico.ultimoComandoReconhecido}",
+            style = MaterialTheme.typography.labelSmall
+        )
+        Text(
+            "Latência: ${diagnostico.ultimaLatenciaMs}ms · média ${diagnostico.latenciaMediaMs}ms " +
+                "(n=${diagnostico.totalTranscricoes})",
+            style = MaterialTheme.typography.labelSmall
+        )
     }
 }
 

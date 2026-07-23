@@ -11,23 +11,6 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
 
-// The picker only ever speaks a short number (digito verificador / quantidade)
-// or one of a handful of confirmation commands. Without any hint, whisper's
-// language-model prior favors common everyday words over an out-of-context
-// number, so a short, clipped utterance like "dez" gets misheard as the far
-// more common word "desce" ("go down!"). Priming the decoder with this
-// domain's vocabulary (numbers + PickingCommand keywords, see
-// state/PickingCommand.kt) as an initial_prompt biases it back towards the
-// words that are actually possible here.
-static const char *DOMAIN_PROMPT_PT =
-        "zero um uma dois duas tres quatro cinco seis meia sete oito nove dez onze doze "
-        "treze catorze quatorze quinze dezesseis dezasseis dezessete dezoito dezenove vinte "
-        "trinta quarenta cinquenta sessenta setenta oitenta noventa cem "
-        "confirmado confirmo ok certo cheguei beleza "
-        "repete repetir de novo nao entendi "
-        "faltou divergencia diferente quebrado avariado "
-        "cancelar para parar sair";
-
 JNIEXPORT jlong JNICALL
 Java_com_whispercpp_whisper_WhisperLib_00024Companion_initContext(
         JNIEnv *env, jobject thiz, jstring model_path_str) {
@@ -50,12 +33,18 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_freeContext(
 JNIEXPORT void JNICALL
 Java_com_whispercpp_whisper_WhisperLib_00024Companion_fullTranscribe(
         JNIEnv *env, jobject thiz, jlong context_ptr, jint num_threads,
-        jfloatArray audio_data, jstring language_str) {
+        jfloatArray audio_data, jstring language_str, jstring prompt_str) {
     UNUSED(thiz);
     struct whisper_context *context = (struct whisper_context *) context_ptr;
     jfloat *audio_data_arr = (*env)->GetFloatArrayElements(env, audio_data, NULL);
     const jsize audio_data_length = (*env)->GetArrayLength(env, audio_data);
     const char *language_chars = (*env)->GetStringUTFChars(env, language_str, NULL);
+    // Caller (PickingStateMachine.promptDeVoz, app side) builds this per current picking
+    // state -- only the vocabulary actually valid right now, not a fixed app-wide list. A
+    // narrower prompt means less lexical competition for the decoder's language-model prior,
+    // which is what previously caused short/out-of-context utterances (e.g. "dez" misheard as
+    // "desce") to lose to more common everyday words.
+    const char *prompt_chars = (*env)->GetStringUTFChars(env, prompt_str, NULL);
 
     struct whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
     params.print_realtime = false;
@@ -67,7 +56,7 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_fullTranscribe(
     params.n_threads = num_threads;
     params.offset_ms = 0;
     params.no_context = true;
-    params.initial_prompt = DOMAIN_PROMPT_PT;
+    params.initial_prompt = prompt_chars;
     // Each recording is exactly one short command/utterance, never a stream.
     // Leaving this false lets whisper's internal seek loop treat trailing
     // silence as a new segment and hallucinate a repeat of the last words
@@ -102,6 +91,7 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_fullTranscribe(
     }
 
     (*env)->ReleaseStringUTFChars(env, language_str, language_chars);
+    (*env)->ReleaseStringUTFChars(env, prompt_str, prompt_chars);
     (*env)->ReleaseFloatArrayElements(env, audio_data, audio_data_arr, JNI_ABORT);
 }
 

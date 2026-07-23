@@ -21,13 +21,17 @@ class PickingStateMachine {
 
     /** Comandos aceitos no estado atual — usado pra STT filtrar/ignorar ruído fora de contexto. */
     fun comandosPermitidos(estado: PickingState = estadoAtual): Set<PickingCommand> = when (estado) {
-        is PickingState.Ocioso,
+        is PickingState.Ocioso -> setOf(PickingCommand.RECEBER_TAREFA)
+
         is PickingState.TarefaCarregada,
         is PickingState.AnunciandoEndereco,
         is PickingState.AnunciandoProduto,
         is PickingState.ItemConcluido,
-        is PickingState.TarefaConcluida,
-        is PickingState.Erro -> emptySet()
+        is PickingState.TarefaConcluida -> emptySet()
+
+        // Sem isso o separador ficaria preso na tela após 3 tentativas não reconhecidas,
+        // dependendo de um toque manual pra resetar — precisa dar pra sair de voz também.
+        is PickingState.Erro -> setOf(PickingCommand.CANCELAR)
 
         is PickingState.AguardandoConfirmacaoEndereco ->
             setOf(PickingCommand.CONFIRMAR, PickingCommand.REPETIR, PickingCommand.CANCELAR)
@@ -37,6 +41,25 @@ class PickingStateMachine {
 
         is PickingState.DivergenciaReportada ->
             setOf(PickingCommand.CONFIRMAR, PickingCommand.CANCELAR)
+    }
+
+    /**
+     * Prompt de priming pro decoder STT — só o vocabulário válido no estado atual (comandos +
+     * números quando aplicável). Passar isso a cada transcrição, em vez de um prompt fixo com
+     * todo o vocabulário do app, reduz a concorrência lexical no decoder e melhora acerto.
+     *
+     * Número falado (dígito verificador ou quantidade) pode vir tanto por extenso ("trezentos e
+     * dezessete") quanto dígito a dígito ("três um sete") — não há convenção fixa, então o
+     * vocabulário completo entra sempre que o estado espera um número; a tolerância a isso fica
+     * por conta de tentar as duas leituras na hora de comparar com o valor esperado, não de
+     * restringir o prompt.
+     */
+    fun promptDeVoz(estado: PickingState = estadoAtual): String {
+        val termosDeComando = PickingCommand.vocabularioDePrompt(comandosPermitidos(estado))
+        val aceitaNumero = estado is PickingState.AguardandoConfirmacaoEndereco ||
+            estado is PickingState.AguardandoConfirmacaoColeta
+        val vocabularioNumerico = if (aceitaNumero) PortugueseNumberParser.vocabularioPt else ""
+        return "$vocabularioNumerico $termosDeComando".trim()
     }
 
     fun transicionar(evento: PickingEvent): PickingState {
@@ -76,17 +99,28 @@ class PickingStateMachine {
 
             is PickingState.AguardandoConfirmacaoEndereco -> when (evento) {
                 is PickingEvent.ConfirmarEndereco -> {
-                    // Além das palavras-comando, aceita o separador ditando o dígito
-                    // verificador do endereço (ex.: "três um sete" p/ "317") como
-                    // confirmação — checagem extra de que ele está no lugar certo.
-                    val digitoFalado = PortugueseNumberParser.parseSequence(evento.transcricao)
+                    // Além das palavras-comando, aceita o separador ditando o dígito verificador
+                    // do endereço como confirmação — sem convenção fixa de como ele lê o número,
+                    // então tenta tanto por extenso ("trezentos e dezessete") quanto dígito a
+                    // dígito ("três um sete"), incluindo as leituras tolerantes a confusão
+                    // teen/unidade ("treze" por "três") e teen/teen vizinho ("dezessete" por
+                    // "dezesseis"), aceitando se qualquer uma bater com "317".
+                    //
+                    // Trade-off aceito conscientemente: como a tolerância compara contra o
+                    // alvo já conhecido, ela não distingue "STT ouviu errado" de "separador
+                    // está no endereço vizinho errado (317 em vez do 316 esperado) e leu
+                    // certo o que via" — os dois casos produzem o mesmo dado e o segundo
+                    // passaria despercebido. Decisão registrada: manter assim por ora.
+                    val alvo = estado.item.endereco.digitoVerificacao
+                    val digitoBateu = PortugueseNumberParser.candidatosSequence(evento.transcricao).contains(alvo) ||
+                        PortugueseNumberParser.candidatosDigitos(evento.transcricao).contains(alvo)
+                    val comando = PickingCommand.reconhecer(evento.transcricao, comandosPermitidos(estado))
                     when {
-                        PickingCommand.reconhecer(evento.transcricao) == PickingCommand.CONFIRMAR ||
-                            digitoFalado == estado.item.endereco.digitoVerificacao ->
+                        comando == PickingCommand.CONFIRMAR || digitoBateu ->
                             PickingState.AnunciandoProduto(estado.tarefa, estado.item)
-                        PickingCommand.reconhecer(evento.transcricao) == PickingCommand.REPETIR ->
+                        comando == PickingCommand.REPETIR ->
                             PickingState.AnunciandoEndereco(estado.tarefa, estado.item)
-                        PickingCommand.reconhecer(evento.transcricao) == PickingCommand.CANCELAR ->
+                        comando == PickingCommand.CANCELAR ->
                             PickingState.Ocioso
                         else -> reincidirOuFalhar(estado, estado.tentativas) {
                             estado.copy(tentativas = it)
@@ -105,12 +139,26 @@ class PickingStateMachine {
 
             is PickingState.AguardandoConfirmacaoColeta -> when (evento) {
                 is PickingEvent.ConfirmarColeta -> {
-                    val comando = PickingCommand.reconhecer(evento.transcricao)
-                    // Se não veio pré-parseado (evento.quantidadeDetectada), tenta extrair
-                    // um número falado da própria transcrição — permite o separador
-                    // simplesmente dizer a quantidade que separou em vez de "confirmado".
-                    val quantidadeFalada = evento.quantidadeDetectada
-                        ?: PortugueseNumberParser.parse(evento.transcricao)
+                    val comando = PickingCommand.reconhecer(evento.transcricao, comandosPermitidos(estado))
+                    // Se não veio pré-parseado (evento.quantidadeDetectada), tenta extrair um
+                    // número falado da própria transcrição — permite o separador simplesmente
+                    // dizer a quantidade em vez de "confirmado". Sem convenção fixa de leitura,
+                    // tenta por extenso e dígito a dígito; prioriza o que bater com o esperado.
+                    val candidatosPrimarios = listOfNotNull(
+                        evento.quantidadeDetectada,
+                        PortugueseNumberParser.parse(evento.transcricao),
+                        PortugueseNumberParser.parseDigitos(evento.transcricao)?.toIntOrNull()
+                    ).distinct()
+                    // Além dos candidatos primários, tenta as leituras tolerantes a confusão
+                    // teen/unidade (ex.: "treze" ouvido em vez de "três") e teen/teen vizinho
+                    // (ex.: "dezessete" ouvido em vez de "dezesseis") só pra achar um match — se
+                    // nada bater, o valor reportado como divergência usa só os primários, pra
+                    // não reportar um número "inventado" que ninguém de fato disse.
+                    val candidatosComTolerancia = (candidatosPrimarios +
+                        PortugueseNumberParser.candidatosDigitos(evento.transcricao).mapNotNull { it.toIntOrNull() } +
+                        PortugueseNumberParser.candidatosSequence(evento.transcricao).mapNotNull { it.toIntOrNull() }).distinct()
+                    val quantidadeFalada = candidatosComTolerancia.firstOrNull { it == estado.item.quantidadeSolicitada }
+                        ?: candidatosPrimarios.firstOrNull()
                     when {
                         comando == PickingCommand.CONFIRMAR -> PickingState.ItemConcluido(estado.tarefa, estado.item)
                         comando == PickingCommand.REPETIR -> PickingState.AnunciandoProduto(estado.tarefa, estado.item)
