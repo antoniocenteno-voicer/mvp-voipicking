@@ -3,13 +3,13 @@ package tech.voicer.voipicking.voice
 /** Resultado de uma transcrição de trecho de áudio. */
 data class SttResultado(val texto: String, val confianca: Float)
 
-/** Contrato de STT — desacopla state machine/ViewModel da engine concreta (whisper.cpp). */
+/** Contrato de STT — desacopla state machine/ViewModel da engine concreta (whisperlib/whisper.cpp). */
 interface SttEngine {
-    /** Carrega modelo (ex.: ggml-tiny/base) do caminho informado. Chamar antes de transcrever. */
-    fun carregarModelo(caminhoModelo: String): Boolean
+    /** Carrega modelo (ex.: ggml-base-q8_0.bin) do caminho informado. Chamar antes de transcrever. */
+    suspend fun carregarModelo(caminhoModelo: String)
 
-    /** Transcreve buffer PCM 16kHz mono 16-bit. Bloqueante — chamar fora da main thread. */
-    fun transcrever(pcm16k: ShortArray): SttResultado
+    /** Transcreve buffer PCM mono float32 [-1, 1] a 16kHz. */
+    suspend fun transcrever(pcm16kFloat: FloatArray, idioma: String = "pt"): SttResultado
 
-    fun liberar()
+    suspend fun liberar()
 }

@@ -1,50 +1,28 @@
 package tech.voicer.voipicking.voice
 
-/**
- * Binding JNI pro whisper.cpp. Implementação nativa em
- * app/src/main/cpp/whisper_jni.cpp — depende do submódulo whisper.cpp
- * (ver README para clonar) sendo buildado pelo CMakeLists.txt.
- *
- * MVP: stub retorna resultado vazio até o submódulo ser vendorizado e o
- * .so nativo compilado — permite o app compilar e a state machine ser
- * testada com STT mockado antes da integração nativa completa.
- */
+import com.whispercpp.whisper.WhisperContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+/** Implementação de [SttEngine] sobre o motor real do módulo `whisperlib` (whisper.cpp via JNI). */
 class WhisperSttEngine : SttEngine {
 
-    private var handleNativo: Long = 0L
-    private var nativoDisponivel = NATIVO_DISPONIVEL
+    private var contexto: WhisperContext? = null
 
-    companion object {
-        private val NATIVO_DISPONIVEL: Boolean = try {
-            System.loadLibrary("whisper_jni")
-            true
-        } catch (e: UnsatisfiedLinkError) {
-            false
+    override suspend fun carregarModelo(caminhoModelo: String) {
+        contexto = withContext(Dispatchers.Default) {
+            WhisperContext.createContextFromFile(caminhoModelo)
         }
     }
 
-    override fun carregarModelo(caminhoModelo: String): Boolean {
-        if (!nativoDisponivel) return false
-        handleNativo = nativeCarregarModelo(caminhoModelo)
-        return handleNativo != 0L
+    override suspend fun transcrever(pcm16kFloat: FloatArray, idioma: String): SttResultado {
+        val ctx = contexto ?: error("Modelo Whisper não carregado — chame carregarModelo() antes")
+        val resultado = ctx.transcribe(pcm16kFloat, idioma)
+        return SttResultado(texto = resultado.text, confianca = resultado.avgConfidence)
     }
 
-    override fun transcrever(pcm16k: ShortArray): SttResultado {
-        if (!nativoDisponivel || handleNativo == 0L) {
-            return SttResultado(texto = "", confianca = 0f)
-        }
-        val texto = nativeTranscrever(handleNativo, pcm16k)
-        return SttResultado(texto = texto, confianca = 1f)
+    override suspend fun liberar() {
+        contexto?.release()
+        contexto = null
     }
-
-    override fun liberar() {
-        if (nativoDisponivel && handleNativo != 0L) {
-            nativeLiberar(handleNativo)
-            handleNativo = 0L
-        }
-    }
-
-    private external fun nativeCarregarModelo(caminhoModelo: String): Long
-    private external fun nativeTranscrever(handle: Long, pcm16k: ShortArray): String
-    private external fun nativeLiberar(handle: Long)
 }

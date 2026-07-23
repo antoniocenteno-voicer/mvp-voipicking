@@ -18,3 +18,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "VoxPicking"
 include(":app")
+include(":whisperlib")
+include(":numberunderstanding")

@@ -10,10 +10,6 @@ build/
 *.apk
 *.aab
 
-# whisper.cpp vendorizado como submódulo — não versionar aqui além do ponteiro do submódulo
-app/src/main/cpp/whisper.cpp/
-
-# modelos ggml (grandes, baixados à parte)
+# modelos ggml (grandes, baixados à parte pelo app no 1º uso — ver voice/ModelManager.kt)
 *.bin
 *.ggml
-app/src/main/assets/models/

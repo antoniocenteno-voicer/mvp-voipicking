@@ -1,5 +1,6 @@
 package tech.voicer.voipicking.state
 
+import com.voicer.numberunderstanding.PortugueseNumberParser
 import kotlinx.serialization.json.Json
 import tech.voicer.voipicking.data.model.EnderecoItem
 import tech.voicer.voipicking.data.model.PedidoEnvelope
@@ -75,10 +76,18 @@ class PickingStateMachine {
 
             is PickingState.AguardandoConfirmacaoEndereco -> when (evento) {
                 is PickingEvent.ConfirmarEndereco -> {
-                    when (PickingCommand.reconhecer(evento.transcricao)) {
-                        PickingCommand.CONFIRMAR -> PickingState.AnunciandoProduto(estado.tarefa, estado.item)
-                        PickingCommand.REPETIR -> PickingState.AnunciandoEndereco(estado.tarefa, estado.item)
-                        PickingCommand.CANCELAR -> PickingState.Ocioso
+                    // Além das palavras-comando, aceita o separador ditando o dígito
+                    // verificador do endereço (ex.: "três um sete" p/ "317") como
+                    // confirmação — checagem extra de que ele está no lugar certo.
+                    val digitoFalado = PortugueseNumberParser.parseSequence(evento.transcricao)
+                    when {
+                        PickingCommand.reconhecer(evento.transcricao) == PickingCommand.CONFIRMAR ||
+                            digitoFalado == estado.item.endereco.digitoVerificacao ->
+                            PickingState.AnunciandoProduto(estado.tarefa, estado.item)
+                        PickingCommand.reconhecer(evento.transcricao) == PickingCommand.REPETIR ->
+                            PickingState.AnunciandoEndereco(estado.tarefa, estado.item)
+                        PickingCommand.reconhecer(evento.transcricao) == PickingCommand.CANCELAR ->
+                            PickingState.Ocioso
                         else -> reincidirOuFalhar(estado, estado.tentativas) {
                             estado.copy(tentativas = it)
                         }
@@ -96,13 +105,23 @@ class PickingStateMachine {
 
             is PickingState.AguardandoConfirmacaoColeta -> when (evento) {
                 is PickingEvent.ConfirmarColeta -> {
-                    when (PickingCommand.reconhecer(evento.transcricao)) {
-                        PickingCommand.CONFIRMAR -> PickingState.ItemConcluido(estado.tarefa, estado.item)
-                        PickingCommand.REPETIR -> PickingState.AnunciandoProduto(estado.tarefa, estado.item)
-                        PickingCommand.DIVERGENCIA -> PickingState.DivergenciaReportada(
-                            estado.tarefa, estado.item, evento.quantidadeDetectada ?: -1
+                    val comando = PickingCommand.reconhecer(evento.transcricao)
+                    // Se não veio pré-parseado (evento.quantidadeDetectada), tenta extrair
+                    // um número falado da própria transcrição — permite o separador
+                    // simplesmente dizer a quantidade que separou em vez de "confirmado".
+                    val quantidadeFalada = evento.quantidadeDetectada
+                        ?: PortugueseNumberParser.parse(evento.transcricao)
+                    when {
+                        comando == PickingCommand.CONFIRMAR -> PickingState.ItemConcluido(estado.tarefa, estado.item)
+                        comando == PickingCommand.REPETIR -> PickingState.AnunciandoProduto(estado.tarefa, estado.item)
+                        comando == PickingCommand.CANCELAR -> PickingState.Ocioso
+                        comando == PickingCommand.DIVERGENCIA -> PickingState.DivergenciaReportada(
+                            estado.tarefa, estado.item, quantidadeFalada ?: -1
                         )
-                        PickingCommand.CANCELAR -> PickingState.Ocioso
+                        quantidadeFalada != null && quantidadeFalada == estado.item.quantidadeSolicitada ->
+                            PickingState.ItemConcluido(estado.tarefa, estado.item)
+                        quantidadeFalada != null ->
+                            PickingState.DivergenciaReportada(estado.tarefa, estado.item, quantidadeFalada)
                         else -> reincidirOuFalhar(estado, estado.tentativas) {
                             estado.copy(tentativas = it)
                         }

@@ -15,6 +15,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -28,6 +29,7 @@ import tech.voicer.voipicking.data.db.AppDatabase
 import tech.voicer.voipicking.repository.PedidoRepository
 import tech.voicer.voipicking.state.PickingState
 import tech.voicer.voipicking.ui.PickingViewModel
+import tech.voicer.voipicking.ui.SttFase
 import tech.voicer.voipicking.voice.TtsManager
 import tech.voicer.voipicking.voice.WhisperSttEngine
 
@@ -54,13 +56,14 @@ class MainActivity : ComponentActivity() {
         val factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                PickingViewModel(repository, tts, sttEngine) as T
+                PickingViewModel(application, repository, tts, sttEngine) as T
         }
 
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     val viewModel: PickingViewModel = viewModel(factory = factory)
+                    LaunchedEffect(Unit) { viewModel.prepararStt() }
                     TelaPicking(viewModel)
                 }
             }
@@ -71,12 +74,15 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun TelaPicking(viewModel: PickingViewModel) {
     val estado by viewModel.estado.collectAsState()
+    val sttFase by viewModel.sttFase.collectAsState()
+    val sttMensagem by viewModel.sttMensagem.collectAsState()
     val tarefaExemplo = remember { TAREFA_EXEMPLO_JSON }
 
     Column(
         modifier = Modifier.fillMaxSize().padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        Text("Motor de voz: $sttMensagem", style = MaterialTheme.typography.labelMedium)
         Text("Estado atual:", style = MaterialTheme.typography.labelLarge)
         Text(descreverEstado(estado), style = MaterialTheme.typography.bodyLarge)
 
@@ -86,12 +92,14 @@ fun TelaPicking(viewModel: PickingViewModel) {
                     Text("Carregar tarefa de exemplo")
                 }
             is PickingState.AguardandoConfirmacaoEndereco -> {
-                Button(onClick = { viewModel.onFalaConfirmacaoEndereco("confirmado") }) { Text("Confirmar endereço") }
-                Button(onClick = { viewModel.onFalaConfirmacaoEndereco("repete") }) { Text("Repetir") }
+                BotaoMicrofone(sttFase, viewModel)
+                Button(onClick = { viewModel.onFalaConfirmacaoEndereco("confirmado") }) { Text("(teste) confirmar endereço") }
+                Button(onClick = { viewModel.onFalaConfirmacaoEndereco("repete") }) { Text("(teste) repetir") }
             }
             is PickingState.AguardandoConfirmacaoColeta -> {
-                Button(onClick = { viewModel.onFalaConfirmacaoColeta("confirmado") }) { Text("Confirmar coleta") }
-                Button(onClick = { viewModel.onFalaConfirmacaoColeta("divergencia", null) }) { Text("Reportar divergência") }
+                BotaoMicrofone(sttFase, viewModel)
+                Button(onClick = { viewModel.onFalaConfirmacaoColeta("confirmado") }) { Text("(teste) confirmar coleta") }
+                Button(onClick = { viewModel.onFalaConfirmacaoColeta("divergencia", null) }) { Text("(teste) reportar divergência") }
             }
             is PickingState.DivergenciaReportada ->
                 Button(onClick = { viewModel.confirmarDivergencia() }) { Text("Ok, seguir") }
@@ -105,6 +113,22 @@ fun TelaPicking(viewModel: PickingViewModel) {
                 Button(onClick = { viewModel.cancelar() }) { Text("Cancelar / reiniciar") }
             else -> {}
         }
+    }
+}
+
+@Composable
+private fun BotaoMicrofone(sttFase: SttFase, viewModel: PickingViewModel) {
+    when (sttFase) {
+        SttFase.PRONTO ->
+            Button(onClick = { viewModel.iniciarGravacao() }) { Text("🎤 Gravar resposta") }
+        SttFase.GRAVANDO ->
+            Button(onClick = { viewModel.pararGravacaoEAvaliar() }) { Text("Parar e enviar") }
+        SttFase.TRANSCREVENDO ->
+            Text("Reconhecendo fala...")
+        SttFase.BAIXANDO_MODELO, SttFase.CARREGANDO_MOTOR ->
+            Text("Preparando motor de voz...")
+        SttFase.NAO_INICIALIZADO, SttFase.ERRO ->
+            Text("Motor de voz indisponível — use os botões manuais abaixo se precisar testar sem microfone.")
     }
 }
 
