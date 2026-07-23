@@ -56,10 +56,67 @@ class PickingStateMachine {
      */
     fun promptDeVoz(estado: PickingState = estadoAtual): String {
         val termosDeComando = PickingCommand.vocabularioDePrompt(comandosPermitidos(estado))
-        val aceitaNumero = estado is PickingState.AguardandoConfirmacaoEndereco ||
-            estado is PickingState.AguardandoConfirmacaoColeta
-        val vocabularioNumerico = if (aceitaNumero) PortugueseNumberParser.vocabularioPt else ""
+        val vocabularioNumerico = if (aceitaNumero(estado)) PortugueseNumberParser.vocabularioPt else ""
         return "$vocabularioNumerico $termosDeComando".trim()
+    }
+
+    private fun aceitaNumero(estado: PickingState): Boolean =
+        estado is PickingState.AguardandoConfirmacaoEndereco ||
+            estado is PickingState.AguardandoConfirmacaoColeta
+
+    /**
+     * Gramática GBNF que RESTRINGE de forma dura a saída do decoder ao conjunto exato de falas
+     * válidas no estado atual — os mesmos comandos de [comandosPermitidos] e, quando o estado
+     * espera número, qualquer sequência de palavras numéricas (cobre leitura dígito a dígito
+     * "tres um sete" e por extenso "trezentos e dezessete"). Diferente de [promptDeVoz] (viés
+     * suave), aqui um token fora do conjunto tem o logit esmagado (grammar_penalty no jni.cpp),
+     * então o erro de CLASSE — número ouvido como palavra do dia-a-dia ("dez"->"desce"),
+     * comando ouvido como outra coisa — deixa de ser emitível. É o que torna o modelo base
+     * (rápido) assertivo o bastante sem trocar por um modelo mais lento.
+     *
+     * Escopo deliberado: a gramática restringe o VOCABULÁRIO (classe de palavras), não o VALOR.
+     * Qualquer número 0-999 continua emitível, então a fala real do separador chega fiel pra
+     * comparação com o esperado — não força a saída a virar o dígito verificador/quantidade
+     * esperada (isso mascararia o separador estar no endereço vizinho errado). A desambiguação
+     * dentro do vocabulário ("tres"/"treze") segue na camada de matching (candidatosDigitos).
+     *
+     * Terminais em minúsculo sem acento, iguais aos [PickingCommand.termos] e ao
+     * [PortugueseNumberParser.vocabularioPt] (ambos sem acento) — a penalidade força o decoder a
+     * essa grafia, que é exatamente a que a camada de matching normaliza. String vazia = sem
+     * gramática (estados que não esperam fala de confirmação).
+     */
+    fun gramaticaDeVoz(estado: PickingState = estadoAtual): String {
+        val permitidos = comandosPermitidos(estado)
+        if (permitidos.isEmpty() && !aceitaNumero(estado)) return ""
+
+        val alternativasComando = permitidos.flatMap { it.termos }
+            .joinToString(" | ") { "\"${it}\"" }
+        val temComando = alternativasComando.isNotBlank()
+        val temNumero = aceitaNumero(estado)
+
+        val alvos = when {
+            temComando && temNumero -> "cmd | numero"
+            temComando -> "cmd"
+            else -> "numero"
+        }
+
+        return buildString {
+            append("root ::= ws (").append(alvos).append(") ws\n")
+            // espaço/pontuação de borda que o whisper costuma emitir (" receber tarefa.")
+            append("ws ::= [ \\t.,!?]*\n")
+            if (temComando) {
+                append("cmd ::= ").append(alternativasComando).append("\n")
+            }
+            if (temNumero) {
+                // "e" entra como conector da leitura por extenso ("trezentos e dezessete");
+                // o parser o descarta, então é inócuo na leitura dígito a dígito.
+                val palavras = (PortugueseNumberParser.vocabularioPt.split(" ") + "e")
+                    .filter { it.isNotBlank() }
+                    .joinToString(" | ") { "\"${it}\"" }
+                append("numero ::= palavra (\" \" palavra)*\n")
+                append("palavra ::= ").append(palavras).append("\n")
+            }
+        }
     }
 
     fun transicionar(evento: PickingEvent): PickingState {

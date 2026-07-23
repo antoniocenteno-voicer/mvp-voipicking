@@ -39,7 +39,10 @@ data class DiagnosticoVoz(
     val ultimoComandoReconhecido: String = "—",
     val ultimaLatenciaMs: Long = 0,
     val latenciaMediaMs: Long = 0,
-    val totalTranscricoes: Int = 0
+    val totalTranscricoes: Int = 0,
+    /** Split da última latência (ms): quanto foi encoder vs decoder — pra saber o que otimizar. */
+    val ultimoEncodeMs: Int = 0,
+    val ultimoDecodeMs: Int = 0
 )
 
 /**
@@ -118,9 +121,13 @@ class PickingViewModel(
             recorder.segmentos().consumeEach { segmento ->
                 if (!_escutaContinuaAtiva.value || !escutaPermitidaNoEstadoAtual()) return@consumeEach
                 _sttFase.value = SttFase.TRANSCREVENDO
-                val resultado = sttEngine.transcrever(segmento, prompt = maquina.promptDeVoz())
+                val resultado = sttEngine.transcrever(
+                    segmento,
+                    prompt = maquina.promptDeVoz(),
+                    grammar = maquina.gramaticaDeVoz()
+                )
                 _sttFase.value = SttFase.PRONTO
-                roteirarTranscricao(resultado.texto, resultado.duracaoMs)
+                roteirarTranscricao(resultado.texto, resultado.duracaoMs, resultado.encodeMs, resultado.decodeMs)
             }
         }
     }
@@ -150,13 +157,17 @@ class PickingViewModel(
         val amostras = recorder.stop()
         _sttFase.value = SttFase.TRANSCREVENDO
         viewModelScope.launch {
-            val resultado = sttEngine.transcrever(amostras, prompt = maquina.promptDeVoz())
+            val resultado = sttEngine.transcrever(
+                amostras,
+                prompt = maquina.promptDeVoz(),
+                grammar = maquina.gramaticaDeVoz()
+            )
             _sttFase.value = SttFase.PRONTO
-            roteirarTranscricao(resultado.texto, resultado.duracaoMs)
+            roteirarTranscricao(resultado.texto, resultado.duracaoMs, resultado.encodeMs, resultado.decodeMs)
         }
     }
 
-    private fun roteirarTranscricao(transcricao: String, duracaoMs: Long) {
+    private fun roteirarTranscricao(transcricao: String, duracaoMs: Long, encodeMs: Float = 0f, decodeMs: Float = 0f) {
         val permitidos = maquina.comandosPermitidos()
         val comando = PickingCommand.reconhecer(transcricao, permitidos)
         Log.d("VoxPicking", "transcrição='$transcricao' estado=${_estado.value::class.simpleName} comando=$comando duracaoMs=$duracaoMs")
@@ -168,7 +179,9 @@ class PickingViewModel(
             ultimoComandoReconhecido = comando?.name ?: "(nenhum)",
             ultimaLatenciaMs = duracaoMs,
             latenciaMediaMs = novaMedia,
-            totalTranscricoes = novoTotal
+            totalTranscricoes = novoTotal,
+            ultimoEncodeMs = encodeMs.toInt(),
+            ultimoDecodeMs = decodeMs.toInt()
         )
         when (_estado.value) {
             is PickingState.Ocioso -> onFalaOcioso(transcricao)

@@ -18,7 +18,11 @@ data class WhisperToken(
 
 data class WhisperResult(
     val text: String,
-    val tokens: List<WhisperToken>
+    val tokens: List<WhisperToken>,
+    /** Tempo médio (ms) por etapa da última transcrição — diagnóstico de latência. */
+    val encodeMs: Float = 0f,
+    val decodeMs: Float = 0f,
+    val sampleMs: Float = 0f
 ) {
     /** Average token confidence across the whole transcription, 0f..1f. */
     val avgConfidence: Float
@@ -36,11 +40,16 @@ class WhisperContext private constructor(private var ptr: Long) {
      * WhisperSttEngine/PickingStateMachine.promptDeVoz on the app side) — narrower prompt means
      * less lexical competition, so the decoder is more likely to land on the right word.
      */
-    suspend fun transcribe(data: FloatArray, language: String = "pt", prompt: String = ""): WhisperResult =
+    suspend fun transcribe(
+        data: FloatArray,
+        language: String = "pt",
+        prompt: String = "",
+        grammar: String = ""
+    ): WhisperResult =
         withContext(scope.coroutineContext) {
             require(ptr != 0L)
             val numThreads = WhisperCpuConfig.preferredThreadCount
-            WhisperLib.fullTranscribe(ptr, numThreads, data, language, prompt)
+            WhisperLib.fullTranscribe(ptr, numThreads, data, language, prompt, grammar)
 
             val text = StringBuilder()
             val tokens = mutableListOf<WhisperToken>()
@@ -55,7 +64,13 @@ class WhisperContext private constructor(private var ptr: Long) {
                     tokens += WhisperToken(tokenText, WhisperLib.getTokenProb(ptr, s, t))
                 }
             }
-            WhisperResult(text.toString().trim(), tokens)
+            val timings = WhisperLib.getTimings(ptr) // [sample, encode, decode] ms
+            WhisperResult(
+                text.toString().trim(), tokens,
+                sampleMs = timings.getOrElse(0) { 0f },
+                encodeMs = timings.getOrElse(1) { 0f },
+                decodeMs = timings.getOrElse(2) { 0f }
+            )
         }
 
     suspend fun release() = withContext(scope.coroutineContext) {
@@ -135,12 +150,13 @@ private class WhisperLib {
 
         external fun initContext(modelPath: String): Long
         external fun freeContext(contextPtr: Long)
-        external fun fullTranscribe(contextPtr: Long, numThreads: Int, audioData: FloatArray, language: String, prompt: String)
+        external fun fullTranscribe(contextPtr: Long, numThreads: Int, audioData: FloatArray, language: String, prompt: String, grammar: String)
         external fun getTextSegmentCount(contextPtr: Long): Int
         external fun getTextSegment(contextPtr: Long, index: Int): String
         external fun getTokenCount(contextPtr: Long, segmentIndex: Int): Int
         external fun getTokenText(contextPtr: Long, segmentIndex: Int, tokenIndex: Int): String
         external fun getTokenProb(contextPtr: Long, segmentIndex: Int, tokenIndex: Int): Float
         external fun getSystemInfo(): String
+        external fun getTimings(contextPtr: Long): FloatArray
     }
 }

@@ -169,6 +169,10 @@ private fun PainelDiagnostico(diagnostico: tech.voicer.voipicking.ui.Diagnostico
                 "(n=${diagnostico.totalTranscricoes})",
             style = MaterialTheme.typography.labelSmall
         )
+        Text(
+            "Split: encode ${diagnostico.ultimoEncodeMs}ms · decode ${diagnostico.ultimoDecodeMs}ms",
+            style = MaterialTheme.typography.labelSmall
+        )
     }
 }
 

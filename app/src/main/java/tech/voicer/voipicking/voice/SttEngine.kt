@@ -1,7 +1,14 @@
 package tech.voicer.voipicking.voice
 
 /** Resultado de uma transcrição de trecho de áudio. */
-data class SttResultado(val texto: String, val confianca: Float, val duracaoMs: Long = 0)
+data class SttResultado(
+    val texto: String,
+    val confianca: Float,
+    val duracaoMs: Long = 0,
+    /** Split interno de latência (ms) — diagnóstico: encode domina em clip curto. */
+    val encodeMs: Float = 0f,
+    val decodeMs: Float = 0f
+)
 
 /** Contrato de STT — desacopla state machine/ViewModel da engine concreta (whisperlib/whisper.cpp). */
 interface SttEngine {
@@ -12,9 +19,17 @@ interface SttEngine {
      * Transcreve buffer PCM mono float32 [-1, 1] a 16kHz. [prompt] primeia o decoder com o
      * vocabulário esperado nesse momento (ver [tech.voicer.voipicking.state.PickingStateMachine.promptDeVoz]) —
      * passar só o vocabulário válido no estado atual, em vez de um prompt fixo genérico, reduz
-     * concorrência lexical no decoder e melhora acerto de primeira tentativa.
+     * concorrência lexical no decoder e melhora acerto de primeira tentativa. [grammar] (GBNF,
+     * ver [tech.voicer.voipicking.state.PickingStateMachine.gramaticaDeVoz]) vai além do prompt:
+     * restringe de forma dura a saída ao conjunto de falas válidas no estado — vazio = sem
+     * restrição.
      */
-    suspend fun transcrever(pcm16kFloat: FloatArray, idioma: String = "pt", prompt: String = ""): SttResultado
+    suspend fun transcrever(
+        pcm16kFloat: FloatArray,
+        idioma: String = "pt",
+        prompt: String = "",
+        grammar: String = ""
+    ): SttResultado
 
     suspend fun liberar()
 

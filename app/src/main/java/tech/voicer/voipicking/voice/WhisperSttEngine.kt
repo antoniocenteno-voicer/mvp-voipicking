@@ -16,15 +16,22 @@ class WhisperSttEngine : SttEngine {
         }
     }
 
-    override suspend fun transcrever(pcm16kFloat: FloatArray, idioma: String, prompt: String): SttResultado {
+    override suspend fun transcrever(pcm16kFloat: FloatArray, idioma: String, prompt: String, grammar: String): SttResultado {
         val ctx = contexto ?: error("Modelo Whisper não carregado — chame carregarModelo() antes")
         val inicio = System.currentTimeMillis()
-        val resultado = ctx.transcribe(pcm16kFloat, idioma, prompt)
+        val resultado = ctx.transcribe(pcm16kFloat, idioma, prompt, grammar)
         val duracaoMs = System.currentTimeMillis() - inicio
         // Latência de transcrição por amostra — usado pra comparar modelos (ex.: base vs small)
         // em latência vs. acerto, sem precisar cronometrar no olhômetro.
-        Log.d("VoxPicking", "transcrição levou ${duracaoMs}ms pra ${pcm16kFloat.size} amostras")
-        return SttResultado(texto = resultado.text, confianca = resultado.avgConfidence, duracaoMs = duracaoMs)
+        Log.d("VoxPicking", "transcrição levou ${duracaoMs}ms (encode=${resultado.encodeMs}ms " +
+            "decode=${resultado.decodeMs}ms) pra ${pcm16kFloat.size} amostras")
+        return SttResultado(
+            texto = resultado.text,
+            confianca = resultado.avgConfidence,
+            duracaoMs = duracaoMs,
+            encodeMs = resultado.encodeMs,
+            decodeMs = resultado.decodeMs
+        )
     }
 
     override suspend fun liberar() {

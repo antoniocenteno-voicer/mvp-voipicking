@@ -7,25 +7,17 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 
-// Histórico do teste latência x compreensão (ver conversa sobre "três"/"treze" e
-// "dezessete"/"dezesseis"): "ggml-base-q8_0.bin" (~1.2s/frase) errou a confirmação de
-// endereço 3x seguidas; "ggml-small-q8_0.bin" (~4-5s emulador / ~10s no device real de
-// teste, sem dotprod/fp16 confirmado via tela de diagnóstico) acertou de primeira, mas
-// muito lento nesse hardware; "ggml-small-q5_1.bin" e "ggml-small-q4_0.bin" descartados
-// (o primeiro pior ainda, o segundo nem existe pra esse tamanho). A confusão "três"/"treze"
-// etc. passou a ser tratada na camada de matching (ver PortugueseNumberParser.candidatosDigitos).
-//
-// Testando agora "ggml-small-q4_k.bin": requantizado por nós localmente (não existe
-// publicado oficialmente) a partir do "ggml-small.bin" f16 oficial, usando o
-// whisper-quantize vendorizado em third_party/whisper.cpp. K-quants (q4_K/q5_K/q6_K) são
-// uma família mais moderna que os legados q4_0/q5_1, com kernel genérico geralmente melhor
-// otimizado — candidato a meio-termo real entre base (rápido/impreciso) e small-q8_0
-// (preciso/lento). 145MB, contra ~250MB do small-q8_0. Hospedado numa GitHub Release deste
-// repo (github.com/antoniocenteno-voicer/mvp-voipicking/releases/tag/stt-models-v1), já que
-// não existe publicação oficial — baixa sozinho no primeiro acesso, igual aos outros.
-private const val MODEL_FILE_NAME = "ggml-small-q4_k.bin"
+// Histórico latência x compreensão: o base-q8_0 é o mais rápido nesse hardware (arm64 sem
+// dotprod/fp16, ~1-1.5s) mas a compreensão NÃO atende (comando "receber tarefa" pede 3-4
+// tentativas, dígito verificador errático) — nem com prompt+gramática. Decisão: voltar ao
+// small-q8_0 (compreensão que a operação exige) e atacar a LATÊNCIA dele no nível do encoder,
+// não trocar de modelo. No device de teste só o q8_0 tem kernel genérico rápido (small-q5_1
+// 14-18s, small-q4_k 20.4s), então mantém-se q8_0. O lever principal é audio_ctx: o encoder
+// custa ~O(audio_ctx²) e roda sobre 30s de contexto por padrão mesmo num clip de 1-2s — ver
+// jni.cpp, onde a gramática GBNF passou a permitir reduzir esse piso com segurança.
+private const val MODEL_FILE_NAME = "ggml-small-q8_0.bin"
 private const val MODEL_URL =
-    "https://github.com/antoniocenteno-voicer/mvp-voipicking/releases/download/stt-models-v1/$MODEL_FILE_NAME"
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$MODEL_FILE_NAME"
 
 /**
  * Baixa o modelo multilíngue ggml p/ armazenamento privado do app no primeiro uso. Não é

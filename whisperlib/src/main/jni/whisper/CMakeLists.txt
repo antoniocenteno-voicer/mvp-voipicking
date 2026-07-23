@@ -10,7 +10,11 @@ set(WHISPER_LIB_DIR ${CMAKE_SOURCE_DIR}/../../../../../third_party/whisper.cpp)
 set(
     SOURCE_FILES
     ${WHISPER_LIB_DIR}/src/whisper.cpp
-    ${CMAKE_SOURCE_DIR}/jni.c
+    # grammar-parser vendorizado de whisper.cpp/examples (só é compilado na lib "common" dos
+    # exemplos upstream, não no core libwhisper) -- precisamos dele aqui pra parsear o GBNF por
+    # estado. jni virou .cpp: chama grammar_parser::parse (C++) e usa a API JNI estilo C++.
+    ${CMAKE_SOURCE_DIR}/grammar-parser.cpp
+    ${CMAKE_SOURCE_DIR}/jni.cpp
 )
 
 find_library(LOG_LIB log)
@@ -59,6 +63,7 @@ endif()
 
 build_library("whisper")
 
+include_directories(${CMAKE_SOURCE_DIR})
 include_directories(${WHISPER_LIB_DIR})
 include_directories(${WHISPER_LIB_DIR}/src)
 include_directories(${WHISPER_LIB_DIR}/include)
