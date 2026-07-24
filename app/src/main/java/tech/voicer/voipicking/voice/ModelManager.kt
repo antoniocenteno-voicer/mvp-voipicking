@@ -7,42 +7,50 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 
-// Histórico latência x compreensão: o base-q8_0 é o mais rápido nesse hardware (arm64 sem
-// dotprod/fp16, ~1-1.5s) mas a compreensão NÃO atende (comando "receber tarefa" pede 3-4
-// tentativas, dígito verificador errático) — nem com prompt+gramática. Decisão: voltar ao
-// small-q8_0 (compreensão que a operação exige) e atacar a LATÊNCIA dele no nível do encoder,
-// não trocar de modelo. No device de teste só o q8_0 tem kernel genérico rápido (small-q5_1
-// 14-18s, small-q4_k 20.4s), então mantém-se q8_0. O lever principal é audio_ctx: o encoder
-// custa ~O(audio_ctx²) e roda sobre 30s de contexto por padrão mesmo num clip de 1-2s — ver
-// jni.cpp, onde a gramática GBNF passou a permitir reduzir esse piso com segurança.
-private const val MODEL_FILE_NAME = "ggml-small-q8_0.bin"
-private const val MODEL_URL =
-    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$MODEL_FILE_NAME"
+/**
+ * Modelos STT que dá pra alternar em runtime pra A/B testar latência x compreensão no próprio
+ * device (sem rebuild). Todos q8_0: no device de teste (arm64 sem dotprod/fp16) só o q8_0 tem
+ * kernel genérico rápido — q5_1/q4_k medidos mais lentos. Trade-off medido no device real:
+ *   - base-q8_0:  ~1.5-2s, encoder ~4x menor; compreensão mais fraca.
+ *   - small-q8_0: ~6s (encoder ~2.8s é o piso nesse hardware); compreende bem melhor.
+ * A gramática GBNF (mata alucinação fora-de-vocabulário) + pré-roll do VAD (recupera o ataque
+ * da fala) atacam justamente a fraqueza do base — por isso vale A/B testar os dois com a MESMA
+ * lógica antes de cravar um.
+ */
+enum class ModeloStt(val fileName: String, val rotulo: String) {
+    BASE_Q8("ggml-base-q8_0.bin", "base (rápido)"),
+    SMALL_Q8("ggml-small-q8_0.bin", "small (preciso)");
+
+    val url: String get() = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$fileName"
+}
 
 /**
- * Baixa o modelo multilíngue ggml p/ armazenamento privado do app no primeiro uso. Não é
- * embutido como asset: pesado demais p/ ficar no APK/repositório.
- * q8_0 (quantização 8-bit, build oficial whisper.cpp): reduz o custo de largura de
- * banda de memória que domina o matmul em CPU mobile, com a menor perda de
- * qualidade entre as quantizações disponíveis.
+ * Baixa o modelo ggml selecionado p/ armazenamento privado do app no primeiro uso (por arquivo:
+ * trocar de modelo baixa o novo e mantém o anterior em cache, então o A/B não re-baixa toda vez).
+ * Não é embutido como asset: pesado demais p/ ficar no APK/repositório.
  */
 object ModelManager {
 
-    /** Nome do modelo em uso — exibido na tela pra saber qual variante está sendo testada. */
-    val nomeModeloAtual: String get() = MODEL_FILE_NAME
+    /** Modelo em uso. Alterável em runtime (ver PickingViewModel.trocarModelo). */
+    @Volatile
+    var modeloSelecionado: ModeloStt = ModeloStt.SMALL_Q8
 
-    fun modelFile(context: Context): File =
-        File(File(context.filesDir, "models"), MODEL_FILE_NAME)
+    /** Nome do arquivo do modelo em uso — exibido na tela. */
+    val nomeModeloAtual: String get() = modeloSelecionado.fileName
+
+    fun modelFile(context: Context, modelo: ModeloStt = modeloSelecionado): File =
+        File(File(context.filesDir, "models"), modelo.fileName)
 
     suspend fun ensureModel(context: Context, onProgress: (downloaded: Long, total: Long) -> Unit): File =
         withContext(Dispatchers.IO) {
-            val dest = modelFile(context)
+            val modelo = modeloSelecionado
+            val dest = modelFile(context, modelo)
             if (dest.exists() && dest.length() > 0) return@withContext dest
 
             dest.parentFile?.mkdirs()
-            val tmp = File(dest.parentFile, "$MODEL_FILE_NAME.part")
+            val tmp = File(dest.parentFile, "${modelo.fileName}.part")
 
-            val connection = URL(MODEL_URL).openConnection() as HttpURLConnection
+            val connection = URL(modelo.url).openConnection() as HttpURLConnection
             connection.instanceFollowRedirects = true
             connection.connect()
             check(connection.responseCode == HttpURLConnection.HTTP_OK) {

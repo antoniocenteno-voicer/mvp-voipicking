@@ -30,7 +30,8 @@ class WhisperSttEngine : SttEngine {
             confianca = resultado.avgConfidence,
             duracaoMs = duracaoMs,
             encodeMs = resultado.encodeMs,
-            decodeMs = resultado.decodeMs
+            decodeMs = resultado.decodeMs,
+            sampleMs = resultado.sampleMs
         )
     }
 

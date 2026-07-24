@@ -21,8 +21,14 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_initContext(
         JNIEnv *env, jobject thiz, jstring model_path_str) {
     UNUSED(thiz);
     const char *model_path_chars = env->GetStringUTFChars(model_path_str, NULL);
+    struct whisper_context_params cparams = whisper_context_default_params();
+    // Flash attention: kernel de atenção fundido, menos tráfego de memória. O encoder domina a
+    // latência do clip curto (medido ~2.7s no device arm64 sem SIMD), e a atenção é a parte
+    // que mais lê/escreve memória — é o lever direto sobre esse custo. Independe da quantização
+    // dos pesos; sem HW fp16 roda em f32, mas ainda corta banda de memória.
+    cparams.flash_attn = true;
     struct whisper_context *context =
-            whisper_init_from_file_with_params(model_path_chars, whisper_context_default_params());
+            whisper_init_from_file_with_params(model_path_chars, cparams);
     env->ReleaseStringUTFChars(model_path_str, model_path_chars);
     return (jlong) context;
 }
@@ -130,10 +136,14 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_fullTranscribe(
 
     whisper_reset_timings(context);
 
-    LOGI("running whisper_full, lang=%s, samples=%d", language_chars, (int) audio_data_length);
+    LOGI("running whisper_full, lang=%s, samples=%d, audio_ctx=%d", language_chars, (int) audio_data_length, audio_ctx);
     if (whisper_full(context, params, audio_data_arr, audio_data_length) != 0) {
         LOGW("whisper_full failed");
     }
+    // Breakdown completo (load/mel/sample/encode/decode/prompt/total) no logcat -- é o único
+    // lugar com o tempo de mel e o TOTAL de sample/decode (whisper_get_timings só dá a média
+    // por passo). Usado pra caçar o "tempo sumido" entre encode e o relógio de parede.
+    whisper_print_timings(context);
 
     env->ReleaseStringUTFChars(language_str, language_chars);
     env->ReleaseStringUTFChars(prompt_str, prompt_chars);

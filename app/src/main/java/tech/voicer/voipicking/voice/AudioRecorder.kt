@@ -11,6 +11,11 @@ import kotlinx.coroutines.channels.ReceiveChannel
 private const val SAMPLE_RATE = 16000
 private const val TAMANHO_FRAME_VAD = 480 // ~30ms @ 16kHz, granularidade de análise do VAD
 private const val DURACAO_MAXIMA_SEGMENTO_MS = 12_000L // corta segmento mesmo sem silêncio (ruído contínuo)
+// Pré-roll: o VAD só confirma FALA_INICIADA depois de N frames acima do limiar (framesMinimoFala),
+// então o ataque da fala (o começo da 1ª palavra, ex.: o "três" de "três um sete") já passou quando
+// o segmento começa a ser gravado — e some. Guardamos os últimos frames num anel e os prependemos
+// no início do segmento pra recuperar esse ataque. ~360ms cobre o atraso de confirmação com folga.
+private const val PREROLL_FRAMES = 12
 
 /**
  * Gravador mono 16kHz PCM mínimo, produz buffer float32 [-1, 1] no formato que
@@ -103,6 +108,8 @@ class AudioRecorder {
             val frame = ShortArray(TAMANHO_FRAME_VAD)
             var segmento = ArrayList<Float>()
             var inicioSegmentoMs = 0L
+            // Anel dos últimos frames de pré-fala, pra recuperar o ataque cortado pelo atraso do VAD.
+            val preRoll = ArrayDeque<FloatArray>(PREROLL_FRAMES + 1)
 
             while (escutaContinuaAtiva) {
                 val lidos = record.read(frame, 0, frame.size)
@@ -114,7 +121,10 @@ class AudioRecorder {
 
                 when (vad.processarFrame(rms)) {
                     VadEvento.FALA_INICIADA -> {
-                        segmento = ArrayList<Float>().apply { addAll(amostras.toList()) }
+                        // Começa com os frames de pré-roll (ataque da fala) + o frame atual.
+                        segmento = ArrayList<Float>()
+                        preRoll.forEach { f -> f.forEach { segmento.add(it) } }
+                        segmento.addAll(amostras.toList())
                         inicioSegmentoMs = System.currentTimeMillis()
                     }
                     VadEvento.FALA_EM_ANDAMENTO -> {
@@ -135,6 +145,10 @@ class AudioRecorder {
                     }
                     VadEvento.SILENCIO -> Unit
                 }
+
+                // Alimenta o anel de pré-roll com o frame atual (sempre), mantendo só os últimos.
+                preRoll.addLast(amostras)
+                while (preRoll.size > PREROLL_FRAMES) preRoll.removeFirst()
             }
             record.stop()
             record.release()

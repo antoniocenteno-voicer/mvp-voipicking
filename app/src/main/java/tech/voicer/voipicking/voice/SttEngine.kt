@@ -7,7 +7,9 @@ data class SttResultado(
     val duracaoMs: Long = 0,
     /** Split interno de latência (ms) — diagnóstico: encode domina em clip curto. */
     val encodeMs: Float = 0f,
-    val decodeMs: Float = 0f
+    val decodeMs: Float = 0f,
+    /** Tempo médio de sampling por passo — sobe se a gramática está cara de aplicar. */
+    val sampleMs: Float = 0f
 )
 
 /** Contrato de STT — desacopla state machine/ViewModel da engine concreta (whisperlib/whisper.cpp). */

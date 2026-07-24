@@ -22,6 +22,7 @@ import tech.voicer.voipicking.state.PickingState
 import tech.voicer.voipicking.state.PickingStateMachine
 import tech.voicer.voipicking.voice.AudioRecorder
 import tech.voicer.voipicking.voice.ModelManager
+import tech.voicer.voipicking.voice.ModeloStt
 import tech.voicer.voipicking.voice.SinalSonoro
 import tech.voicer.voipicking.voice.SttEngine
 import tech.voicer.voipicking.voice.TtsManager
@@ -42,7 +43,8 @@ data class DiagnosticoVoz(
     val totalTranscricoes: Int = 0,
     /** Split da última latência (ms): quanto foi encoder vs decoder — pra saber o que otimizar. */
     val ultimoEncodeMs: Int = 0,
-    val ultimoDecodeMs: Int = 0
+    val ultimoDecodeMs: Int = 0,
+    val ultimoSampleMs: Int = 0
 )
 
 /**
@@ -83,6 +85,10 @@ class PickingViewModel(
     /** Build nativo carregado + threads — só disponível depois que o modelo é carregado. */
     val infoMotor: StateFlow<String> = _infoMotor.asStateFlow()
 
+    private val _modeloAtual = MutableStateFlow(ModelManager.modeloSelecionado)
+    /** Modelo STT em uso — a UI oferece troca em runtime pra A/B testar no device. */
+    val modeloAtual: StateFlow<ModeloStt> = _modeloAtual.asStateFlow()
+
     /** Baixa o modelo (1ª execução) e carrega o motor whisper.cpp. Chamar uma vez ao abrir a tela. */
     fun prepararStt() {
         if (_sttFase.value != SttFase.NAO_INICIALIZADO) return
@@ -107,6 +113,25 @@ class PickingViewModel(
         }
     }
 
+    /**
+     * Troca o modelo STT em runtime: para a escuta, libera o motor atual, seleciona o novo
+     * (baixa se ainda não estiver em cache) e recarrega. Mantém o estado do picking intacto — é
+     * só o motor de voz que reinicia. Pra A/B testar base x small no device sem rebuild.
+     */
+    fun trocarModelo(modelo: ModeloStt) {
+        if (modelo == ModelManager.modeloSelecionado) return
+        pararLoopEscutaContinua() // não mexe em _escutaContinuaAtiva; prepararStt religa se estava ligado
+        viewModelScope.launch {
+            _sttMensagem.value = "Trocando pra ${modelo.rotulo}..."
+            sttEngine.liberar()
+            ModelManager.modeloSelecionado = modelo
+            _modeloAtual.value = modelo
+            _infoMotor.value = ""
+            _sttFase.value = SttFase.NAO_INICIALIZADO // destrava o guard de prepararStt()
+            prepararStt()
+        }
+    }
+
     /** Liga/desliga o loop de escuta contínua (grava em chunks, transcreve, roteia, repete). */
     fun alternarEscutaContinua(ativa: Boolean) {
         _escutaContinuaAtiva.value = ativa
@@ -127,7 +152,7 @@ class PickingViewModel(
                     grammar = maquina.gramaticaDeVoz()
                 )
                 _sttFase.value = SttFase.PRONTO
-                roteirarTranscricao(resultado.texto, resultado.duracaoMs, resultado.encodeMs, resultado.decodeMs)
+                roteirarTranscricao(resultado.texto, resultado.duracaoMs, resultado.encodeMs, resultado.decodeMs, resultado.sampleMs)
             }
         }
     }
@@ -163,11 +188,11 @@ class PickingViewModel(
                 grammar = maquina.gramaticaDeVoz()
             )
             _sttFase.value = SttFase.PRONTO
-            roteirarTranscricao(resultado.texto, resultado.duracaoMs, resultado.encodeMs, resultado.decodeMs)
+            roteirarTranscricao(resultado.texto, resultado.duracaoMs, resultado.encodeMs, resultado.decodeMs, resultado.sampleMs)
         }
     }
 
-    private fun roteirarTranscricao(transcricao: String, duracaoMs: Long, encodeMs: Float = 0f, decodeMs: Float = 0f) {
+    private fun roteirarTranscricao(transcricao: String, duracaoMs: Long, encodeMs: Float = 0f, decodeMs: Float = 0f, sampleMs: Float = 0f) {
         val permitidos = maquina.comandosPermitidos()
         val comando = PickingCommand.reconhecer(transcricao, permitidos)
         Log.d("VoxPicking", "transcrição='$transcricao' estado=${_estado.value::class.simpleName} comando=$comando duracaoMs=$duracaoMs")
@@ -181,7 +206,8 @@ class PickingViewModel(
             latenciaMediaMs = novaMedia,
             totalTranscricoes = novoTotal,
             ultimoEncodeMs = encodeMs.toInt(),
-            ultimoDecodeMs = decodeMs.toInt()
+            ultimoDecodeMs = decodeMs.toInt(),
+            ultimoSampleMs = sampleMs.toInt()
         )
         when (_estado.value) {
             is PickingState.Ocioso -> onFalaOcioso(transcricao)

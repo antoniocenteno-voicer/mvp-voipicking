@@ -33,6 +33,7 @@ import tech.voicer.voipicking.state.PickingState
 import tech.voicer.voipicking.ui.PickingViewModel
 import tech.voicer.voipicking.ui.SttFase
 import tech.voicer.voipicking.voice.ModelManager
+import tech.voicer.voipicking.voice.ModeloStt
 import tech.voicer.voipicking.voice.TtsManager
 import tech.voicer.voipicking.voice.WhisperSttEngine
 
@@ -97,6 +98,7 @@ fun TelaPicking(viewModel: PickingViewModel) {
             Switch(checked = escutaContinuaAtiva, onCheckedChange = { viewModel.alternarEscutaContinua(it) })
         }
         PainelDiagnostico(diagnosticoVoz, infoMotor)
+        SeletorModelo(viewModel, sttFase)
         Text("Estado atual:", style = MaterialTheme.typography.labelLarge)
         Text(descreverEstado(estado), style = MaterialTheme.typography.bodyLarge)
 
@@ -170,9 +172,30 @@ private fun PainelDiagnostico(diagnostico: tech.voicer.voipicking.ui.Diagnostico
             style = MaterialTheme.typography.labelSmall
         )
         Text(
-            "Split: encode ${diagnostico.ultimoEncodeMs}ms · decode ${diagnostico.ultimoDecodeMs}ms",
+            "Split: encode ${diagnostico.ultimoEncodeMs}ms · decode ${diagnostico.ultimoDecodeMs}ms · " +
+                "sample ${diagnostico.ultimoSampleMs}ms",
             style = MaterialTheme.typography.labelSmall
         )
+    }
+}
+
+/** Troca o modelo STT em runtime pra A/B testar latência x compreensão no device sem rebuild. */
+@Composable
+private fun SeletorModelo(viewModel: PickingViewModel, sttFase: SttFase) {
+    val modeloAtual by viewModel.modeloAtual.collectAsState()
+    // Só troca quando o motor está ocioso — não no meio de download/carga/transcrição.
+    val podeTrocar = sttFase == SttFase.PRONTO || sttFase == SttFase.NAO_INICIALIZADO || sttFase == SttFase.ERRO
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+    ) {
+        Text("Modelo:", style = MaterialTheme.typography.labelSmall)
+        ModeloStt.values().forEach { m ->
+            val selecionado = m == modeloAtual
+            Button(onClick = { viewModel.trocarModelo(m) }, enabled = podeTrocar && !selecionado) {
+                Text((if (selecionado) "● " else "") + m.rotulo, style = MaterialTheme.typography.labelSmall)
+            }
+        }
     }
 }
 
